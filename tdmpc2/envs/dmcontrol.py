@@ -89,20 +89,95 @@ class Pixels(gym.Wrapper):
 		return self._get_obs(), reward, done, info
 
 
+### define pendulum swingup dense task
+from dm_control.suite.pendulum import (
+    _ANGLE_BOUND,
+    _COSINE_BOUND,
+    _DEFAULT_TIME_LIMIT,
+    Physics,
+    base,
+    collections,
+    control,
+    get_model_and_assets,
+    rewards,
+)
+from dm_env import specs
+from gym.envs.registration import register
+
+
+class SwingUpDense(base.Task):
+  """A Pendulum `Task` to swing up and balance the pole."""
+
+  def __init__(self, random=None):
+    """Initialize an instance of `Pendulum`.
+
+    Args:
+      random: Optional, either a `numpy.random.RandomState` instance, an
+        integer seed for creating a new `RandomState`, or None to select a seed
+        automatically (default).
+    """
+    super().__init__(random=random)
+
+  def initialize_episode(self, physics):
+    """Sets the state of the environment at the start of each episode.
+
+    Pole is set to a random angle between [-pi, pi).
+
+    Args:
+      physics: An instance of `Physics`.
+
+    """
+    physics.named.data.qpos['hinge'] = self.random.uniform(-np.pi, np.pi)
+    super().initialize_episode(physics)
+
+  def get_observation(self, physics):
+    """Returns an observation.
+
+    Observations are states concatenating pole orientation and angular velocity
+    and pixels from fixed camera.
+
+    Args:
+      physics: An instance of `physics`, Pendulum physics.
+
+    Returns:
+      A `dict` of observation.
+    """
+    obs = collections.OrderedDict()
+    obs['orientation'] = physics.pole_orientation()
+    obs['velocity'] = physics.angular_velocity()
+    return obs
+
+  def get_reward(self, physics):
+    return rewards.tolerance(physics.pole_vertical(), (_COSINE_BOUND, 1), margin=1) # make this task dense reward
+
+def make_pendulum_swingup_dense(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
+    physics = Physics.from_xml_string(*get_model_and_assets())
+    task = SwingUpDense(random=random)
+    environment_kwargs = environment_kwargs or {}
+    return control.Environment(physics, task, time_limit=time_limit, **environment_kwargs)
+###
+
 def make_env(cfg):
 	"""
 	Make DMControl environment.
 	Adapted from https://github.com/facebookresearch/drqv2
 	"""
-	domain, task = cfg.task.replace('-', '_').split('_', 1)
-	domain = dict(cup='ball_in_cup', pointmass='point_mass').get(domain, domain)
+	# from loguru import logger
+	_, task = cfg.task.split('-', 1)
+	domain, task = task.split('-', 1)
+	# domain, task = cfg.task.replace('-', '_').split('_', 1)
+	# domain = dict(cup='ball_in_cup', pointmass='point_mass').get(domain, domain)
+	# logger.info(f"domain: {domain}, task: {task}")
+
 	if (domain, task) not in suite.ALL_TASKS:
-		raise ValueError('Unknown task:', task)
+		if not (domain == "pendulum" and task == "swingup_dense"):
+			raise ValueError('Unknown task:', task)
 	assert cfg.obs in {'state', 'rgb'}, 'This task only supports state and rgb observations.'
-	env = suite.load(domain,
-					 task,
-					 task_kwargs={'random': cfg.seed},
-					 visualize_reward=False)
+	if domain == "pendulum" and task == "swingup_dense":
+		env = make_pendulum_swingup_dense(random=cfg.seed)
+		env.task.visualize_reward = False
+	else:
+		env = suite.load(domain, task, task_kwargs={"random": cfg.seed}, visualize_reward=False)
 	env = action_scale.Wrapper(env, minimum=-1., maximum=1.)
 	env = DMControlWrapper(env, domain)
 	if cfg.obs == 'rgb':
